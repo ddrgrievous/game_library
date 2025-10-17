@@ -1,0 +1,1 @@
+# This file makes the cat_game directory a Python package

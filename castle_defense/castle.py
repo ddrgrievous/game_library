@@ -1,0 +1,464 @@
+import pygame
+import random
+import math
+
+# Initialize Pygame
+pygame.init()
+pygame.font.init()
+
+# Constants
+WINDOW_WIDTH = 1600  # Made screen wider
+WINDOW_HEIGHT = 600
+CASTLE_WIDTH = 200
+ENEMY_SIZE = 30
+SPAWN_RATE = 3000  # milliseconds between spawns at start
+MIN_SPAWN_RATE = 500  # fastest possible spawn rate
+LEVEL_DURATION = 30  # seconds
+HEALTH_UPGRADE_COST = 10  # points per health point
+
+# Game States
+PLAYING = 0
+UPGRADING = 1
+GAME_OVER = 2
+
+# Colors
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+GREEN = (0, 255, 0)
+RED = (255, 0, 0)
+GRAY = (128, 128, 128)
+BROWN = (139, 69, 19)
+
+# Initialize screen
+screen = None
+
+def init_display():
+    global screen
+    if screen is None:
+        screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        pygame.display.set_caption("Castle Defense")
+
+class Bullet:
+    def __init__(self, x, y, enemies):
+        self.x = x
+        self.y = y
+        self.speed = 7
+        self.radius = 5
+        self.alive = True
+        self.enemies = enemies  # Store reference to all enemies
+        self.find_nearest_target()
+
+    def find_nearest_target(self):
+        # Find nearest living enemy
+        nearest_dist = float('inf')
+        self.target = None
+        for enemy in self.enemies:
+            if enemy.alive:
+                dist = math.hypot(enemy.x - self.x, enemy.y - self.y)
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    self.target = enemy
+        # If no living enemies found, bullet disappears
+        if self.target is None:
+            self.alive = False
+
+    def update(self):
+        # If current target is dead, find a new one
+        if not self.target or not self.target.alive:
+            self.find_nearest_target()
+            if not self.alive:  # No targets found
+                return
+        
+        # Calculate direction to target
+        dx = self.target.x - self.x
+        dy = self.target.y - self.y
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            return
+            
+        # Normalize and apply speed
+        dx = dx / dist * self.speed
+        dy = dy / dist * self.speed
+        
+        # Update position
+        self.x += dx
+        self.y += dy
+        
+        # Check for collision with target
+        if math.hypot(self.x - self.target.x, self.y - self.target.y) < self.target.radius:
+            self.target.health -= 1
+            if self.target.health <= 0:
+                self.target.alive = False
+            self.alive = False
+
+    def draw(self):
+        pygame.draw.circle(screen, WHITE, (int(self.x), int(self.y)), self.radius)
+
+class Turret:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.radius = 15
+        self.fire_rate = 2000  # milliseconds between shots
+        self.last_shot = 0
+        self.bullets = []
+
+    def update(self, enemies):
+        current_time = pygame.time.get_ticks()
+        
+        # Update existing bullets
+        self.bullets = [b for b in self.bullets if b.alive]
+        for bullet in self.bullets:
+            bullet.update()
+            
+        # Fire at nearest enemy if time elapsed
+        if current_time - self.last_shot > self.fire_rate and enemies:
+            # Check if there are any living enemies
+            living_enemies = [e for e in enemies if e.alive]
+            if living_enemies:
+                self.bullets.append(Bullet(self.x, self.y, enemies))
+                self.last_shot = current_time
+
+    def draw(self):
+        # Draw turret base
+        pygame.draw.circle(screen, GRAY, (int(self.x), int(self.y)), self.radius)
+        pygame.draw.circle(screen, BLACK, (int(self.x), int(self.y)), self.radius, 2)
+        
+        # Draw all bullets
+        for bullet in self.bullets:
+            bullet.draw()
+
+class Castle:
+    def __init__(self):
+        self.health = 100
+        self.x = 0
+        self.width = CASTLE_WIDTH
+        self.height = WINDOW_HEIGHT
+        self.towers = [
+            {"x": CASTLE_WIDTH - 40, "y": WINDOW_HEIGHT // 4, "height": 150},
+            {"x": CASTLE_WIDTH - 40, "y": (WINDOW_HEIGHT * 3) // 4, "height": 150}
+        ]
+        self.turrets = []
+    
+    def draw(self):
+        # Draw main castle wall
+        pygame.draw.rect(screen, GRAY, (self.x, 0, self.width, self.height))
+        
+        # Draw castle details (bricks)
+        for y in range(0, WINDOW_HEIGHT, 30):
+            for x in range(0, CASTLE_WIDTH, 60):
+                pygame.draw.rect(screen, BLACK, (x, y, 58, 28), 1)
+        
+        # Draw towers
+        for tower in self.towers:
+            pygame.draw.rect(screen, BROWN, 
+                           (tower["x"], tower["y"] - tower["height"]//2, 
+                            40, tower["height"]))
+            # Draw tower top
+            pygame.draw.polygon(screen, RED,
+                              [(tower["x"], tower["y"] - tower["height"]//2),
+                               (tower["x"] + 20, tower["y"] - tower["height"]//2 - 20),
+                               (tower["x"] + 40, tower["y"] - tower["height"]//2)])
+        
+        # Draw turrets
+        for turret in self.turrets:
+            turret.draw()
+        
+        # Draw health
+        font = pygame.font.Font(None, 48)
+        color = RED if self.health < 10 else GREEN
+        health_text = font.render(f"Castle Health: {self.health:3d}", True, color)  # Width of 3 ensures 100 displays properly
+        screen.blit(health_text, (WINDOW_WIDTH - 300, 20))
+
+class Enemy:
+    def __init__(self, level):
+        self.radius = ENEMY_SIZE // 2
+        self.x = WINDOW_WIDTH + self.radius
+        self.y = random.randint(self.radius, WINDOW_HEIGHT - self.radius)
+        self.speed = 2 + (level * 0.5)  # Enemies get faster with each level
+        self.alive = True
+        # Health increases with level (min 1, max 5 health)
+        self.health = min(5, 1 + level // 3)  # Made health scaling more gradual
+        self.initial_health = self.health  # Store initial health for scoring
+        self.points_awarded = False  # Track if points have been awarded for this enemy
+        
+    def draw(self):
+        if not self.alive:
+            return
+            
+        # Draw enemy body
+        pygame.draw.circle(screen, RED, (int(self.x), int(self.y)), self.radius)
+        
+        # Draw enemy health number
+        font = pygame.font.Font(None, 24)
+        health_text = font.render(str(self.health), True, WHITE)
+        text_rect = health_text.get_rect(center=(int(self.x), int(self.y)))
+        screen.blit(health_text, text_rect)
+        
+        # Draw enemy details
+        pygame.draw.circle(screen, BLACK, (int(self.x - 5), int(self.y - 12)), 3)
+        pygame.draw.circle(screen, BLACK, (int(self.x + 5), int(self.y - 12)), 3)
+        pygame.draw.line(screen, BLACK, 
+                        (int(self.x - 8), int(self.y + 5)),
+                        (int(self.x + 8), int(self.y + 5)), 2)
+    
+    def update(self):
+        if not self.alive:
+            return
+        self.x -= self.speed
+    
+    def check_castle_collision(self, castle):
+        return self.x - self.radius <= CASTLE_WIDTH
+    
+    def check_click(self, pos):
+        if not self.alive:
+            return False
+        distance = math.hypot(pos[0] - self.x, pos[1] - self.y)
+        return distance <= self.radius
+
+class Game:
+    def __init__(self, start_level=1, start_points=0):
+        self.castle = Castle()
+        self.enemies = []
+        self.level = start_level
+        self.score = start_points
+        self.last_spawn = pygame.time.get_ticks()
+        self.level_start_time = pygame.time.get_ticks()
+        self.game_state = PLAYING
+        self.spawn_delay = max(MIN_SPAWN_RATE, SPAWN_RATE - (self.level * 200))  # Adjust spawn rate for starting level
+        self.upgrade_button_rect = pygame.Rect(WINDOW_WIDTH//2 - 100, WINDOW_HEIGHT - 80, 200, 50)
+        # Error message system
+        self.error_message = None
+        self.error_time = 0
+        self.error_duration = 2000  # Error message lasts 2 seconds
+        # Turret system
+        self.placing_turret = False
+        self.TURRET_COST = 10
+        
+        # Debug info for testing mode
+        if start_level > 1 or start_points > 0:
+            print(f"Testing Mode Active:")
+            print(f"Starting Level: {start_level}")
+            print(f"Starting Points: {start_points}")
+    
+    def spawn_enemy(self):
+        current_time = pygame.time.get_ticks()
+        if current_time - self.last_spawn > self.spawn_delay:
+            self.enemies.append(Enemy(self.level))
+            self.last_spawn = current_time
+    
+    def update(self):
+        if self.game_state == GAME_OVER:
+            return
+            
+        if self.game_state == PLAYING:
+            # Check if level time is up
+            current_time = pygame.time.get_ticks()
+            if (current_time - self.level_start_time) >= LEVEL_DURATION * 1000:
+                self.game_state = UPGRADING
+                return
+            
+            # Spawn enemies
+            self.spawn_enemy()
+            
+            # Update enemies
+            for enemy in self.enemies:
+                enemy.update()
+                if enemy.alive and enemy.check_castle_collision(self.castle):
+                    enemy.alive = False
+                    self.castle.health -= enemy.health
+                    if self.castle.health <= 0:
+                        self.castle.health = 0
+                        self.game_state = GAME_OVER
+            
+            # Update turrets
+            for turret in self.castle.turrets:
+                turret.update(self.enemies)
+        
+        # Handle dead enemies and update score
+        current_enemies = []
+        for enemy in self.enemies:
+            if not enemy.alive and not enemy.points_awarded:  # Award points for turret kills
+                self.score += enemy.initial_health
+                enemy.points_awarded = True
+            if enemy.alive or enemy.x > 0:
+                current_enemies.append(enemy)
+        self.enemies = current_enemies
+        
+        # Remove this auto-level up based on score as levels now progress through the upgrade screen
+    
+    def draw(self):
+        # Fill background
+        screen.fill(BLACK)
+        
+        # Draw castle
+        self.castle.draw()
+        
+        # Draw enemies
+        for enemy in self.enemies:
+            enemy.draw()
+        
+        # Draw score and level
+        font = pygame.font.Font(None, 28)  # Smaller font size
+        score_text = font.render(f"Score: {self.score}", True, WHITE)
+        level_text = font.render(f"Level: {self.level}", True, WHITE)
+        # Position text after the castle wall
+        screen.blit(score_text, (CASTLE_WIDTH + 20, 10))
+        screen.blit(level_text, (CASTLE_WIDTH + 20, 40))
+        
+        # Draw timer
+        if self.game_state == PLAYING:
+            time_left = LEVEL_DURATION - ((pygame.time.get_ticks() - self.level_start_time) // 1000)
+            time_text = font.render(f"Time: {time_left:2d}", True, WHITE)
+            screen.blit(time_text, (WINDOW_WIDTH - 300, 60))
+            
+        # Draw upgrade screen
+        elif self.game_state == UPGRADING:
+            # Draw semi-transparent overlay
+            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+            overlay.fill((0, 0, 0))
+            overlay.set_alpha(128)
+            screen.blit(overlay, (0, 0))
+            
+            # Draw upgrade options
+            title_font = pygame.font.Font(None, 48)
+            title = title_font.render(f"Level {self.level} Complete!", True, WHITE)
+            screen.blit(title, (WINDOW_WIDTH//2 - title.get_width()//2, WINDOW_HEIGHT//4))
+            
+            # Draw available points
+            points_text = font.render(f"Available Points: {self.score}", True, WHITE)
+            screen.blit(points_text, (WINDOW_WIDTH//2 - points_text.get_width()//2, WINDOW_HEIGHT//2 - 50))
+            
+            # Draw health upgrade option
+            health_cost = HEALTH_UPGRADE_COST
+            health_text = font.render(f"Buy 1 Health ({health_cost} points)", True, WHITE)
+            health_rect = health_text.get_rect(center=(WINDOW_WIDTH//2, WINDOW_HEIGHT//2))
+            screen.blit(health_text, health_rect)
+            
+            # Draw turret upgrade option
+            turret_text = font.render(f"Buy Turret ({self.TURRET_COST} points)", True, WHITE)
+            self.turret_rect = turret_text.get_rect(center=(WINDOW_WIDTH//2, WINDOW_HEIGHT//2 + 40))
+            screen.blit(turret_text, self.turret_rect)
+            
+            # Draw continue button
+            pygame.draw.rect(screen, GREEN, self.upgrade_button_rect)
+            continue_text = font.render("Continue to Next Level", True, BLACK)
+            text_rect = continue_text.get_rect(center=self.upgrade_button_rect.center)
+            screen.blit(continue_text, text_rect)
+            
+            # Draw error message if it exists
+            if self.error_message:
+                current_time = pygame.time.get_ticks()
+                if current_time - self.error_time < self.error_duration:
+                    # Calculate alpha based on time remaining
+                    alpha = 255 * (1 - (current_time - self.error_time) / self.error_duration)
+                    error_font = pygame.font.Font(None, 36)
+                    error_text = error_font.render(self.error_message, True, RED)
+                    error_text.set_alpha(alpha)
+                    error_rect = error_text.get_rect(center=(WINDOW_WIDTH//2, WINDOW_HEIGHT//2 + 50))
+                    screen.blit(error_text, error_rect)
+                else:
+                    self.error_message = None
+        
+        # Draw game over
+        if self.game_state == GAME_OVER:
+            font = pygame.font.Font(None, 74)
+            game_over_text = font.render("GAME OVER", True, RED)
+            restart_text = font.render("Press R to Restart", True, WHITE)
+            screen.blit(game_over_text, 
+                       (WINDOW_WIDTH//2 - game_over_text.get_width()//2, 
+                        WINDOW_HEIGHT//2 - 50))
+            screen.blit(restart_text, 
+                       (WINDOW_WIDTH//2 - restart_text.get_width()//2, 
+                        WINDOW_HEIGHT//2 + 50))
+    
+    def handle_click(self, pos):
+        if self.game_state == GAME_OVER:
+            return
+            
+        if self.game_state == PLAYING:
+            for enemy in self.enemies:
+                if enemy.check_click(pos):
+                    enemy.health -= 1
+                    if enemy.health <= 0:
+                        enemy.alive = False
+                        if not enemy.points_awarded:
+                            self.score += enemy.initial_health
+                            enemy.points_awarded = True
+                    return
+                    
+        elif self.game_state == UPGRADING:
+            if self.placing_turret:
+                # Only allow placement on castle
+                if pos[0] <= CASTLE_WIDTH:
+                    self.castle.turrets.append(Turret(pos[0], pos[1]))
+                    self.score -= self.TURRET_COST
+                    self.placing_turret = False
+                return
+                
+            # Check for health upgrade click
+            mouse_x, mouse_y = pos
+            health_rect = pygame.Rect(WINDOW_WIDTH//2 - 100, WINDOW_HEIGHT//2 - 15, 200, 30)
+            if health_rect.collidepoint(pos):
+                if self.score >= HEALTH_UPGRADE_COST:
+                    self.castle.health += 1
+                    self.score -= HEALTH_UPGRADE_COST
+                else:
+                    self.error_message = f"Not enough points! Need {HEALTH_UPGRADE_COST} points."
+                    self.error_time = pygame.time.get_ticks()
+            
+            # Check for turret upgrade click
+            elif self.turret_rect.collidepoint(pos):
+                if self.score >= self.TURRET_COST:
+                    self.placing_turret = True
+                    self.error_message = "Click on the castle to place the turret"
+                    self.error_time = pygame.time.get_ticks()
+                else:
+                    self.error_message = f"Not enough points! Need {self.TURRET_COST} points."
+                    self.error_time = pygame.time.get_ticks()
+                
+            # Check for continue button click
+            elif self.upgrade_button_rect.collidepoint(pos):
+                if self.placing_turret:
+                    self.placing_turret = False
+                else:
+                    self.level += 1
+                    self.level_start_time = pygame.time.get_ticks()
+                    self.spawn_delay = max(MIN_SPAWN_RATE, SPAWN_RATE - (self.level * 200))
+                    self.game_state = PLAYING
+
+def main():
+    # Add command line argument parsing
+    import argparse
+    parser = argparse.ArgumentParser(description='Castle Defense Game')
+    parser.add_argument('--level', type=int, default=1, help='Starting level (default: 1)')
+    parser.add_argument('--points', type=int, default=0, help='Starting points (default: 0)')
+    args = parser.parse_args()
+    
+    # Initialize display
+    init_display()
+    
+    # Create game with custom starting values
+    game = Game(start_level=args.level, start_points=args.points)
+    clock = pygame.time.Clock()
+    running = True
+    
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                game.handle_click(pygame.mouse.get_pos())
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r and game.game_state == GAME_OVER:
+                    game = Game()  # Reset the game
+                elif event.key == pygame.K_ESCAPE:
+                    running = False
+        
+        game.update()
+        game.draw()
+        pygame.display.flip()
+        clock.tick(60)
+
+if __name__ == "__main__":
+    main()
