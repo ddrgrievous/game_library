@@ -52,6 +52,9 @@ python castle_defense/castle.py --level 5 --points 100 --upgrade-store
   - Automatically targets nearest enemy
   - Bullets track enemies and deal 1 damage
   - Bullets can switch targets if original target dies
+  - Click turret during upgrade phase to improve fire rate
+  - Each upgrade reduces firing delay by 20%
+  - Upgrade costs increase with level (15 × level × 2 points)
 
 ### Enemies
 

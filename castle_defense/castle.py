@@ -122,13 +122,30 @@ class Bullet:
         pygame.draw.circle(screen, WHITE, (int(self.x), int(self.y)), self.radius)
 
 class Turret:
-    def __init__(self, x, y):
+    def __init__(self, x, y, game=None):
         self.x = x
         self.y = y
         self.radius = 15
-        self.fire_rate = 2000  # milliseconds between shots
+        self.level = 1
+        self.base_fire_rate = 2000  # Base milliseconds between shots
+        self.fire_rate = self.base_fire_rate  # Current fire rate
         self.last_shot = 0
         self.bullets = []
+        self.game = game  # Store reference to game
+        
+    def get_upgrade_cost(self):
+        # Cost increases exponentially with level
+        return 15 * (self.level * 2)  # 15, 30, 60, 120, etc.
+        
+    def upgrade(self):
+        self.level += 1
+        # Improve fire rate by 20% per level
+        self.fire_rate = int(self.base_fire_rate * (0.8 ** (self.level - 1)))
+        
+    def get_rect(self):
+        # Return a rect for click detection
+        return pygame.Rect(self.x - self.radius, self.y - self.radius,
+                         self.radius * 2, self.radius * 2)
 
     def update(self, enemies):
         current_time = pygame.time.get_ticks()
@@ -146,10 +163,68 @@ class Turret:
                 self.bullets.append(Bullet(self.x, self.y, enemies))
                 self.last_shot = current_time
 
-    def draw(self):
+    def draw(self, show_upgrade_info=False):
         # Draw turret base
         pygame.draw.circle(screen, GRAY, (int(self.x), int(self.y)), self.radius)
         pygame.draw.circle(screen, BLACK, (int(self.x), int(self.y)), self.radius, 2)
+        
+        # Draw level number
+        small_font = pygame.font.Font(None, 20)
+        level_text = small_font.render(str(self.level), True, BLACK)
+        level_rect = level_text.get_rect(center=(self.x, self.y))
+        screen.blit(level_text, level_rect)
+        
+        # Always show upgrade cost during upgrade phase
+        if self.game and self.game.game_state == UPGRADING:
+            cost = self.get_upgrade_cost()
+            cost_font = pygame.font.Font(None, 24)  # Slightly larger font
+            cost_text = cost_font.render(f"⬆ {cost}p", True, WHITE)
+            
+            # Draw black outline for better visibility
+            outline_color = BLACK
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                outline = cost_font.render(f"⬆ {cost}p", True, outline_color)
+                outline_rect = outline.get_rect(centerx=self.x + dx, bottom=self.y - self.radius - 5 + dy)
+                screen.blit(outline, outline_rect)
+            
+            # Draw main text on top
+            cost_rect = cost_text.get_rect(centerx=self.x, bottom=self.y - self.radius - 5)
+            screen.blit(cost_text, cost_rect)
+        
+        # Draw detailed upgrade info on hover
+        if show_upgrade_info:
+            info_font = pygame.font.Font(None, 24)
+            cost = self.get_upgrade_cost()
+            current_rate = self.fire_rate / 1000  # Convert to seconds
+            next_rate = self.base_fire_rate * (0.8 ** self.level) / 1000
+            
+            # Create info box
+            info_lines = [
+                f"Level {self.level} Turret",
+                f"Current Rate: {current_rate:.1f}s",
+                f"Next Level: {next_rate:.1f}s",
+                f"Speed Boost: +20%"
+            ]
+            
+            # Calculate box size
+            line_height = 25
+            box_width = 200
+            box_height = len(info_lines) * line_height + 20
+            
+            # Position box above turret
+            box_x = max(10, min(self.x - box_width//2, WINDOW_WIDTH - box_width - 10))
+            box_y = max(10, self.y - box_height - 30)
+            
+            # Draw info box background
+            pygame.draw.rect(screen, BLACK, (box_x, box_y, box_width, box_height))
+            pygame.draw.rect(screen, WHITE, (box_x, box_y, box_width, box_height), 2)
+            
+            # Draw info text
+            for i, line in enumerate(info_lines):
+                text = info_font.render(line, True, WHITE)
+                text_rect = text.get_rect(centerx=box_x + box_width//2,
+                                        y=box_y + 10 + i*line_height)
+                screen.blit(text, text_rect)
         
         # Draw all bullets
         for bullet in self.bullets:
@@ -187,9 +262,13 @@ class Castle:
                                (tower["x"] + 20, tower["y"] - tower["height"]//2 - 20),
                                (tower["x"] + 40, tower["y"] - tower["height"]//2)])
         
-        # Draw turrets
+        # Draw turrets (with upgrade info if needed)
+        mouse_pos = pygame.mouse.get_pos()
         for turret in self.turrets:
-            turret.draw()
+            show_info = False
+            if hasattr(self, 'game') and self.game.game_state == UPGRADING:
+                show_info = turret.get_rect().collidepoint(mouse_pos)
+            turret.draw(show_info)
         
         # Draw health
         font = pygame.font.Font(None, 48)
@@ -568,7 +647,7 @@ class Game:
         # Draw enemies
         for enemy in self.enemies:
             enemy.draw()
-            
+        
         # Draw click effects
         for effect in self.click_effects:
             effect.draw()
@@ -665,20 +744,46 @@ class Game:
                     if enemy.health <= 0:
                         enemy.alive = False
                         if not enemy.points_awarded:
-                            self.score += round(enemy.initial_health * self.point_multiplier)
+                            self.score += enemy.initial_health
                             enemy.points_awarded = True
-                    
+                            
         elif self.game_state == UPGRADING:
             if self.placing_turret:
                 # Only allow placement on castle
                 if pos[0] <= CASTLE_WIDTH:
-                    self.castle.turrets.append(Turret(pos[0], pos[1]))
-                    self.score -= self.TURRET_COST
-                    self.placing_turret = False
+                    # Check distance to other turrets
+                    min_spacing = 40  # Minimum pixels between turret centers
+                    too_close = False
+                    for turret in self.castle.turrets:
+                        distance = math.hypot(pos[0] - turret.x, pos[1] - turret.y)
+                        if distance < min_spacing:
+                            too_close = True
+                            self.error_message = "Turrets must be spaced further apart!"
+                            self.error_time = pygame.time.get_ticks()
+                            break
+                    
+                    if not too_close:
+                        new_turret = Turret(pos[0], pos[1], self)
+                        self.castle.turrets.append(new_turret)
+                        self.score -= self.TURRET_COST
+                        self.placing_turret = False
                 return
+            
+            # Check for turret upgrades first
+            for turret in self.castle.turrets:
+                if turret.get_rect().collidepoint(pos):
+                    upgrade_cost = turret.get_upgrade_cost()
+                    if self.score >= upgrade_cost:
+                        self.score -= upgrade_cost
+                        turret.upgrade()
+                        self.error_message = f"Turret upgraded to level {turret.level}!"
+                        self.error_time = pygame.time.get_ticks()
+                    else:
+                        self.error_message = f"Not enough points! Need {upgrade_cost} points."
+                        self.error_time = pygame.time.get_ticks()
+                    return
                 
             # Check for health upgrade click
-            mouse_x, mouse_y = pos
             health_rect = pygame.Rect(WINDOW_WIDTH//2 - 100, WINDOW_HEIGHT//2 - 15, 200, 30)
             if health_rect.collidepoint(pos):
                 if self.score >= HEALTH_UPGRADE_COST:
@@ -688,7 +793,7 @@ class Game:
                     self.error_message = f"Not enough points! Need {HEALTH_UPGRADE_COST} points."
                     self.error_time = pygame.time.get_ticks()
             
-            # Check for turret upgrade click
+            # Check for turret purchase click
             elif self.turret_rect.collidepoint(pos):
                 if self.score >= self.TURRET_COST:
                     self.placing_turret = True
