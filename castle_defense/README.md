@@ -68,6 +68,13 @@ Scout Enemies (Introduced at Level 3):
 - Can be killed by clicks or turret shots
 - Spawn chance increases by 5% per level (max 40%)
 
+Boss Enemies (Every 5th Level):
+- Appear at 15 second mark
+- Large purple enemies with golden crowns
+- High health (10 + bonus health per 5 levels)
+- Slower but steady movement
+- Require coordinated turret and click attacks to defeat
+
 ### Testing Tips
 1. Use `--upgrade-store` to test turret placement and upgrades
 2. Higher levels spawn stronger and faster enemies

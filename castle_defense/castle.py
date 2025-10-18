@@ -211,6 +211,12 @@ class Enemy:
             self.health = 1  # Always 1 health
             self.color = (0, 191, 255)  # Deep Sky Blue
             self.radius = int(ENEMY_SIZE // 2.5)  # Smaller size
+        elif enemy_type == "boss":
+            # Boss enemies are tough and moderately fast
+            self.speed = 1.0 + (level * 0.2)  # Slower than regular enemies
+            self.health = 10 + (level // 5) * 5  # High health that increases with level
+            self.color = (148, 0, 211)  # Purple
+            self.radius = int(ENEMY_SIZE * 1.5)  # Larger size
         else:
             # Regular enemies are slower but tougher
             self.speed = 1.5 + (level * 0.3)  # Reduced base speed and scaling
@@ -233,7 +239,32 @@ class Enemy:
         text_rect = health_text.get_rect(center=(int(self.x), int(self.y)))
         screen.blit(health_text, text_rect)
         
-        if self.enemy_type == "scout":
+        if self.enemy_type == "boss":
+            # Boss details - crown and angry eyes
+            # Draw crown
+            crown_points = [
+                (int(self.x - self.radius * 0.8), int(self.y - self.radius * 0.8)),
+                (int(self.x - self.radius * 0.4), int(self.y - self.radius * 1.2)),
+                (int(self.x), int(self.y - self.radius * 0.8)),
+                (int(self.x + self.radius * 0.4), int(self.y - self.radius * 1.2)),
+                (int(self.x + self.radius * 0.8), int(self.y - self.radius * 0.8))
+            ]
+            pygame.draw.polygon(screen, (255, 215, 0), crown_points)  # Gold crown
+            
+            # Angry eyes
+            pygame.draw.line(screen, BLACK, 
+                           (int(self.x - 10), int(self.y - 5)),
+                           (int(self.x - 5), int(self.y)), 3)
+            pygame.draw.line(screen, BLACK,
+                           (int(self.x + 10), int(self.y - 5)),
+                           (int(self.x + 5), int(self.y)), 3)
+            
+            # Fierce mouth
+            pygame.draw.line(screen, BLACK,
+                           (int(self.x - 8), int(self.y + 8)),
+                           (int(self.x + 8), int(self.y + 8)), 3)
+                           
+        elif self.enemy_type == "scout":
             # Scout details - sleeker look
             eye_offset = 3
             pygame.draw.circle(screen, BLACK, (int(self.x - 3), int(self.y - 8)), 2)
@@ -275,6 +306,7 @@ class Game:
         self.last_spawn = pygame.time.get_ticks()
         self.level_start_time = pygame.time.get_ticks()
         self.game_state = UPGRADING if start_in_store else PLAYING
+        self.boss_spawned = False  # Initialize boss spawn flag
         # More aggressive spawn delay reduction at higher levels
         base_reduction = 300 + (self.level * 100)  # Increases reduction with level
         self.spawn_delay = max(MIN_SPAWN_RATE, SPAWN_RATE - base_reduction)
@@ -352,11 +384,36 @@ class Game:
         if self.game_state == PLAYING:
             # Check if level time is up
             current_time = pygame.time.get_ticks()
+            elapsed_seconds = (current_time - self.level_start_time) // 1000
+            
+            # Debug boss spawn conditions
+            if self.level % 5 == 0:  # Every 5th level
+                if elapsed_seconds == 1:  # At start of level
+                    print(f"This is a boss level (level {self.level})")
+                if elapsed_seconds == 14:  # Just before spawn time
+                    print(f"Boss spawn imminent. Level: {self.level}, Time: {elapsed_seconds}")
+                
+                # Check for boss spawn at 15 seconds
+                if elapsed_seconds == 15:
+                    if not hasattr(self, 'boss_spawned') or not self.boss_spawned:
+                        print(f"Spawning boss! Level: {self.level}")
+                        # Spawn boss
+                        boss = Enemy(self.level, "boss")
+                        boss.y = WINDOW_HEIGHT // 2  # Spawn in middle of screen
+                        boss.x = WINDOW_WIDTH + boss.radius  # Make sure it starts off screen
+                        self.enemies.append(boss)
+                        self.boss_spawned = True
+                        # Warning message
+                        self.error_message = "WARNING: Boss Enemy Approaching!"
+                        self.error_time = current_time
+                        self.error_duration = 3000  # Show warning for 3 seconds
+            
             if (current_time - self.level_start_time) >= LEVEL_DURATION * 1000:
                 self.game_state = UPGRADING
+                self.boss_spawned = False  # Reset boss spawn flag for next level
                 return
             
-            # Spawn enemies
+            # Spawn regular enemies
             self.spawn_enemy()
             
             # Update enemies
@@ -520,10 +577,16 @@ class Game:
                 if self.placing_turret:
                     self.placing_turret = False
                 else:
-                    self.level += 1
+                    if not hasattr(self, 'first_level'):
+                        # If starting from upgrade store, don't increment level first time
+                        self.first_level = True
+                    else:
+                        self.level += 1
+                    print(f"Starting level {self.level}")
                     self.level_start_time = pygame.time.get_ticks()
                     self.spawn_delay = max(MIN_SPAWN_RATE, SPAWN_RATE - (self.level * 200))
                     self.game_state = PLAYING
+                    self.boss_spawned = False  # Reset boss spawn flag
 
 def main():
     # Add command line argument parsing
