@@ -28,6 +28,7 @@ GREEN = (0, 255, 0)
 RED = (255, 0, 0)
 GRAY = (128, 128, 128)
 BROWN = (139, 69, 19)
+DARKGRAY = (64, 64, 64)
 
 # Initialize screen
 screen = None
@@ -197,7 +198,9 @@ class Castle:
         screen.blit(health_text, (WINDOW_WIDTH - 300, 20))
 
 class Enemy:
-    def __init__(self, level, enemy_type="regular"):
+    def __init__(self, level, enemy_type="regular", difficulty_multipliers=None):
+        if difficulty_multipliers is None:
+            difficulty_multipliers = {'health': 1.0, 'speed': 1.0}
         self.radius = ENEMY_SIZE // 2
         self.x = WINDOW_WIDTH + self.radius
         self.y = random.randint(self.radius, WINDOW_HEIGHT - self.radius)
@@ -205,22 +208,37 @@ class Enemy:
         self.alive = True
         self.points_awarded = False  # Track if points have been awarded for this enemy
         
+        # Apply difficulty multipliers to base stats
+        health_mult = difficulty_multipliers['health']
+        speed_mult = difficulty_multipliers['speed']
+
         if enemy_type == "scout":
             # Scouts are faster but weaker
-            self.speed = 3 + (level * 0.7)  # Higher base speed and scaling
-            self.health = 1  # Always 1 health
+            self.speed = (3 + (level * 0.7)) * speed_mult
+            self.health = max(1, round(1 * health_mult))  # Minimum 1 health
             self.color = (0, 191, 255)  # Deep Sky Blue
             self.radius = int(ENEMY_SIZE // 2.5)  # Smaller size
         elif enemy_type == "boss":
             # Boss enemies are tough and moderately fast
-            self.speed = 1.0 + (level * 0.2)  # Slower than regular enemies
-            self.health = 10 + (level // 5) * 5  # High health that increases with level
+            self.speed = (1.0 + (level * 0.2)) * speed_mult
+            self.health = round((10 + (level // 5) * 5) * health_mult)
             self.color = (148, 0, 211)  # Purple
             self.radius = int(ENEMY_SIZE * 1.5)  # Larger size
+        elif enemy_type == "zigzagger":
+            # Zigzagger enemies move in a pattern
+            self.speed = (2 + (level * 0.4)) * speed_mult
+            self.health = max(1, round(2 * health_mult))
+            self.color = (255, 165, 0)  # Orange
+            self.radius = int(ENEMY_SIZE // 1.5)  # Slightly smaller
+            # Zigzag movement parameters
+            self.amplitude = 100  # How far up/down it moves
+            self.frequency = 0.02  # How fast it zigzags
+            self.original_y = self.y  # Store original y position
+            self.distance_traveled = 0  # Track distance for zigzag pattern
         else:
             # Regular enemies are slower but tougher
-            self.speed = 1.5 + (level * 0.3)  # Reduced base speed and scaling
-            self.health = min(5, 1 + level // 3)
+            self.speed = (1.5 + (level * 0.3)) * speed_mult
+            self.health = max(1, round(min(5, 1 + level // 3) * health_mult))
             self.color = RED
             
         self.initial_health = self.health  # Store initial health for scoring
@@ -286,7 +304,18 @@ class Enemy:
     def update(self):
         if not self.alive:
             return
-        self.x -= self.speed
+        
+        if self.enemy_type == "zigzagger":
+            # Update horizontal position
+            self.x -= self.speed
+            # Update distance traveled for zigzag calculation
+            self.distance_traveled += self.speed
+            # Calculate new y position using sine wave
+            self.y = self.original_y + math.sin(self.distance_traveled * self.frequency) * self.amplitude
+            # Keep within screen bounds
+            self.y = max(self.radius, min(WINDOW_HEIGHT - self.radius, self.y))
+        else:
+            self.x -= self.speed
     
     def check_castle_collision(self, castle):
         return self.x - self.radius <= CASTLE_WIDTH
@@ -297,9 +326,63 @@ class Enemy:
         distance = math.hypot(pos[0] - self.x, pos[1] - self.y)
         return distance <= self.radius
 
+class ClickEffect:
+    def __init__(self, x, y, radius):
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.creation_time = pygame.time.get_ticks()
+        self.alpha = 255  # Start fully opaque
+
+    def update(self, current_time, duration):
+        time_alive = current_time - self.creation_time
+        if time_alive >= duration:
+            return False
+        # Fade out over time
+        self.alpha = int(255 * (1 - (time_alive / duration)))
+        return True
+
+    def draw(self):
+        # Create a surface for the click effect with transparency
+        surface = pygame.Surface((self.radius * 2, self.radius * 2), pygame.SRCALPHA)
+        # Draw expanding circles with decreasing opacity
+        for r in range(self.radius, 0, -4):
+            alpha = int((r / self.radius) * self.alpha)
+            pygame.draw.circle(surface, (255, 255, 255, alpha), 
+                             (self.radius, self.radius), r)
+        # Draw the surface onto the screen
+        screen.blit(surface, 
+                   (self.x - self.radius, self.y - self.radius))
+
+    def check_enemy_collision(self, enemy):
+        distance = math.hypot(self.x - enemy.x, self.y - enemy.y)
+        return distance <= self.radius + enemy.radius
+
 class Game:
-    def __init__(self, start_level=1, start_points=0, start_in_store=False):
+    def __init__(self, start_level=1, start_points=0, start_in_store=False, difficulty='normal'):
+        # Set difficulty multipliers
+        self.difficulty = difficulty
+        if difficulty == 'easy':
+            self.enemy_health_multiplier = 0.7  # Enemies have 30% less health
+            self.enemy_speed_multiplier = 0.8   # Enemies are 20% slower
+            self.spawn_rate_multiplier = 1.3    # 30% slower spawn rate
+            self.castle_health_bonus = 50       # Extra starting health
+            self.point_multiplier = 1.2         # 20% more points
+        elif difficulty == 'hard':
+            self.enemy_health_multiplier = 1.3  # Enemies have 30% more health
+            self.enemy_speed_multiplier = 1.2   # Enemies are 20% faster
+            self.spawn_rate_multiplier = 0.8    # 20% faster spawn rate
+            self.castle_health_bonus = 0        # No health bonus
+            self.point_multiplier = 0.8         # 20% fewer points
+        else:  # normal
+            self.enemy_health_multiplier = 1.0
+            self.enemy_speed_multiplier = 1.0
+            self.spawn_rate_multiplier = 1.0
+            self.castle_health_bonus = 0
+            self.point_multiplier = 1.0
+
         self.castle = Castle()
+        self.castle.health += self.castle_health_bonus  # Apply health bonus
         self.enemies = []
         self.level = start_level
         self.score = start_points
@@ -307,6 +390,19 @@ class Game:
         self.level_start_time = pygame.time.get_ticks()
         self.game_state = UPGRADING if start_in_store else PLAYING
         self.boss_spawned = False  # Initialize boss spawn flag
+        # Click effect system
+        self.click_effects = []  # List to store active click effects
+        self.CLICK_RADIUS = 20  # Size of the click effect circle
+        self.CLICK_DURATION = 150  # How long the click effect lasts (milliseconds)
+        
+        # Debug info for testing mode
+        if start_level > 1 or start_points > 0 or start_in_store:
+            print(f"Testing Mode Active:")
+            print(f"Starting Level: {start_level}")
+            print(f"Starting Points: {start_points}")
+            print(f"Difficulty: {difficulty}")
+            if start_in_store:
+                print("Starting in Upgrade Store")
         # More aggressive spawn delay reduction at higher levels
         base_reduction = 300 + (self.level * 100)  # Increases reduction with level
         self.spawn_delay = max(MIN_SPAWN_RATE, SPAWN_RATE - base_reduction)
@@ -317,7 +413,7 @@ class Game:
         self.error_duration = 2000  # Error message lasts 2 seconds
         # Turret system
         self.placing_turret = False
-        self.TURRET_COST = 10
+        self.TURRET_COST = 30
         
         # Debug info for testing mode
         if start_level > 1 or start_points > 0 or start_in_store:
@@ -329,33 +425,48 @@ class Game:
     
     def spawn_enemy(self):
         current_time = pygame.time.get_ticks()
-        if current_time - self.last_spawn > self.spawn_delay:
+        if current_time - self.last_spawn > (self.spawn_delay * self.spawn_rate_multiplier):
             # Calculate number of enemies to spawn based on level
             max_group_size = min(1 + self.level // 2, 5)  # Max 5 enemies at once
             num_enemies = random.randint(1, max_group_size)
             
-            # Scouts only appear from level 3 onwards
+            # Set up enemy type chances based on level
             SCOUT_INTRO_LEVEL = 3
-            can_spawn_scouts = self.level >= SCOUT_INTRO_LEVEL
+            ZIGZAGGER_INTRO_LEVEL = 2
             
-            if can_spawn_scouts:
-                # Scout chance increases with level, starting at 10% at level 3
-                # +5% per level after that, maxing at 40%
-                scout_chance = min(0.1 + ((self.level - SCOUT_INTRO_LEVEL) * 0.05), 0.4)
+            can_spawn_scouts = self.level >= SCOUT_INTRO_LEVEL
+            can_spawn_zigzaggers = self.level >= ZIGZAGGER_INTRO_LEVEL
+            
+            # Calculate spawn chances
+            scout_chance = min(0.1 + ((self.level - SCOUT_INTRO_LEVEL) * 0.05), 0.4) if can_spawn_scouts else 0
+            zigzagger_chance = min(0.15 + ((self.level - ZIGZAGGER_INTRO_LEVEL) * 0.04), 0.3) if can_spawn_zigzaggers else 0
+            
+            # Show warning messages for new enemy types
+            if can_spawn_scouts and not hasattr(self, 'scouts_introduced') and self.game_state == PLAYING:
+                self.error_message = "Warning: Fast scout enemies have appeared!"
+                self.error_time = pygame.time.get_ticks()
+                self.scouts_introduced = True
                 
-                # Show warning message on first scout encounter
-                if not hasattr(self, 'scouts_introduced') and self.game_state == PLAYING:
-                    self.error_message = "Warning: Fast scout enemies have appeared!"
-                    self.error_time = pygame.time.get_ticks()
-                    self.scouts_introduced = True
-            else:
-                scout_chance = 0
+            if can_spawn_zigzaggers and not hasattr(self, 'zigzaggers_introduced') and self.game_state == PLAYING:
+                self.error_message = "Warning: Zigzagging enemies approaching!"
+                self.error_time = pygame.time.get_ticks()
+                self.zigzaggers_introduced = True
             
             # Spawn group of enemies with slight position variations
             for _ in range(num_enemies):
-                # Decide if this enemy should be a scout
-                enemy_type = "scout" if random.random() < scout_chance else "regular"
-                enemy = Enemy(self.level, enemy_type)
+                    # Determine enemy type based on chances
+                rand = random.random()
+                if rand < scout_chance:
+                    enemy_type = "scout"
+                elif rand < (scout_chance + zigzagger_chance):
+                    enemy_type = "zigzagger"
+                else:
+                    enemy_type = "regular"
+                difficulty_multipliers = {
+                    'health': self.enemy_health_multiplier,
+                    'speed': self.enemy_speed_multiplier
+                }
+                enemy = Enemy(self.level, enemy_type, difficulty_multipliers)
                 
                 # Vary vertical position slightly within group
                 enemy.y += random.randint(-30, 30)
@@ -380,6 +491,11 @@ class Game:
     def update(self):
         if self.game_state == GAME_OVER:
             return
+        
+        # Update click effects and remove expired ones
+        current_time = pygame.time.get_ticks()
+        self.click_effects = [effect for effect in self.click_effects 
+                            if effect.update(current_time, self.CLICK_DURATION)]
             
         if self.game_state == PLAYING:
             # Check if level time is up
@@ -452,6 +568,10 @@ class Game:
         # Draw enemies
         for enemy in self.enemies:
             enemy.draw()
+            
+        # Draw click effects
+        for effect in self.click_effects:
+            effect.draw()
         
         # Draw score and level
         font = pygame.font.Font(None, 28)  # Smaller font size
@@ -532,15 +652,21 @@ class Game:
             return
             
         if self.game_state == PLAYING:
+            # Create click effect
+            click_effect = ClickEffect(pos[0], pos[1], self.CLICK_RADIUS)
+            self.click_effects.append(click_effect)
+            
+            # Check for enemies in the click radius
+            damaged_enemies = False
             for enemy in self.enemies:
-                if enemy.check_click(pos):
+                if click_effect.check_enemy_collision(enemy):
+                    damaged_enemies = True
                     enemy.health -= 1
                     if enemy.health <= 0:
                         enemy.alive = False
                         if not enemy.points_awarded:
-                            self.score += enemy.initial_health
+                            self.score += round(enemy.initial_health * self.point_multiplier)
                             enemy.points_awarded = True
-                    return
                     
         elif self.game_state == UPGRADING:
             if self.placing_turret:
@@ -588,6 +714,163 @@ class Game:
                     self.game_state = PLAYING
                     self.boss_spawned = False  # Reset boss spawn flag
 
+class DifficultySelector:
+    def __init__(self):
+        # Calculate initial positions
+        option_width = 300
+        option_height = 400
+        total_width = 3 * (option_width + 50)  # 3 options
+        start_x = (WINDOW_WIDTH - total_width) // 2
+        
+        self.options = [
+            {
+                'name': 'Easy',
+                'description': [
+                    'Recommended for young players',
+                    '• Weaker enemies',
+                    '• Extra castle health',
+                    '• More points earned',
+                    '• Slower enemy spawns'
+                ],
+                'color': (0, 255, 0),  # Green
+                'rect': pygame.Rect(
+                    start_x - 10,
+                    190,  # 200 - 10 for padding
+                    option_width + 20,
+                    option_height + 20
+                )
+            },
+            {
+                'name': 'Normal',
+                'description': [
+                    'Standard game balance',
+                    '• Regular enemy strength',
+                    '• Normal spawn rates',
+                    '• Standard scoring'
+                ],
+                'color': (255, 255, 0),  # Yellow
+                'rect': pygame.Rect(
+                    start_x + (option_width + 50) - 10,
+                    190,
+                    option_width + 20,
+                    option_height + 20
+                )
+            },
+            {
+                'name': 'Hard',
+                'description': [
+                    'For experienced players',
+                    '• Tougher enemies',
+                    '• Faster enemy movement',
+                    '• Rapid spawns',
+                    '• Lower scoring'
+                ],
+                'color': (255, 0, 0),  # Red
+                'rect': pygame.Rect(
+                    start_x + 2 * (option_width + 50) - 10,
+                    190,
+                    option_width + 20,
+                    option_height + 20
+                )
+            }
+        ]
+        self.selected = 1  # Default to Normal
+        self.hovered = None  # Track which option is being hovered
+        self.title_font = pygame.font.Font(None, 74)
+        self.option_font = pygame.font.Font(None, 48)
+        self.desc_font = pygame.font.Font(None, 32)
+
+    def draw(self, screen):
+        screen.fill(BLACK)
+        
+        # Draw title
+        title = self.title_font.render("Select Difficulty", True, WHITE)
+        title_rect = title.get_rect(center=(WINDOW_WIDTH // 2, 100))
+        screen.blit(title, title_rect)
+        
+        # Draw each option
+        option_width = 300
+        option_height = 400
+        total_width = len(self.options) * (option_width + 50)
+        start_x = (WINDOW_WIDTH - total_width) // 2
+        
+        # Get current mouse position for hover effect
+        mouse_pos = pygame.mouse.get_pos()
+        
+        for i, option in enumerate(self.options):
+            x = start_x + i * (option_width + 50)
+            y = 200
+            
+            # Update the rectangle position (in case window was resized)
+            option['rect'].x = x-10
+            option['rect'].y = y-10
+            
+            # Check if mouse is hovering over this option
+            is_hovered = option['rect'].collidepoint(mouse_pos)
+            is_selected = i == self.selected
+            
+            # Draw option background with hover effect
+            if is_hovered or is_selected:
+                # Draw outer glow effect
+                for offset in range(6, 0, -1):
+                    alpha = 100 if is_selected else 50
+                    if is_hovered:
+                        alpha = min(255, alpha + 100)
+                    glow_surface = pygame.Surface((option_width+20+offset*2, option_height+20+offset*2), pygame.SRCALPHA)
+                    glow_color = (*option['color'], alpha // offset)
+                    pygame.draw.rect(glow_surface, glow_color, 
+                                   (0, 0, option_width+20+offset*2, option_height+20+offset*2))
+                    screen.blit(glow_surface, 
+                              (x-10-offset, y-10-offset))
+            
+            # Draw the main option box
+            pygame.draw.rect(screen, (*option['color'], 40), 
+                           option['rect'])
+            pygame.draw.rect(screen, option['color'], 
+                           option['rect'], 3)
+            
+            # Draw difficulty name
+            name_text = self.option_font.render(option['name'], True, option['color'])
+            name_rect = name_text.get_rect(center=(x + option_width//2, y + 40))
+            screen.blit(name_text, name_rect)
+            
+            # Draw description lines
+            for j, line in enumerate(option['description']):
+                desc_text = self.desc_font.render(line, True, DARKGRAY)
+                desc_rect = desc_text.get_rect(center=(x + option_width//2, y + 120 + j*40))
+                screen.blit(desc_text, desc_rect)
+        
+        # Draw instructions
+        instructions = [
+            "Click to select difficulty",
+            "Press ESC to quit"
+        ]
+        for i, instruction in enumerate(instructions):
+            inst_text = self.desc_font.render(instruction, True, GRAY)
+            inst_rect = inst_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT - 80 + i*30))
+            screen.blit(inst_text, inst_rect)
+
+    def handle_input(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:  # Left click
+            # Check if click was on any option
+            for i, option in enumerate(self.options):
+                if option['rect'].collidepoint(event.pos):
+                    return option['name'].lower()
+        elif event.type == pygame.MOUSEMOTION:
+            # Update selected based on hover
+            for i, option in enumerate(self.options):
+                if option['rect'].collidepoint(event.pos):
+                    self.selected = i
+                    break
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_LEFT:
+                self.selected = max(0, self.selected - 1)
+            elif event.key == pygame.K_RIGHT:
+                self.selected = min(len(self.options) - 1, self.selected)
+            elif event.key == pygame.K_RETURN:
+                return self.options[self.selected]['name'].lower()
+        return None
+
 def main():
     # Add command line argument parsing
     import argparse
@@ -595,13 +878,41 @@ def main():
     parser.add_argument('--level', type=int, default=1, help='Starting level (default: 1)')
     parser.add_argument('--points', type=int, default=0, help='Starting points (default: 0)')
     parser.add_argument('--upgrade-store', action='store_true', help='Start in upgrade store')
+    parser.add_argument('--difficulty', type=str, choices=['easy', 'normal', 'hard'], 
+                      help='Game difficulty (default: show selection screen)')
     args = parser.parse_args()
     
     # Initialize display
     init_display()
     
+    difficulty = args.difficulty
+    if difficulty is None:
+        # Show difficulty selection screen
+        selector = DifficultySelector()
+        clock = pygame.time.Clock()
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    return
+                
+                result = selector.handle_input(event)
+                if result is not None:
+                    difficulty = result
+                    running = False
+            
+            selector.draw(screen)
+            pygame.display.flip()
+            clock.tick(60)
+    
+    if difficulty is None:  # User closed the window during difficulty selection
+        return
+        
     # Create game with custom starting values
-    game = Game(start_level=args.level, start_points=args.points, start_in_store=args.upgrade_store)
+    game = Game(start_level=args.level, start_points=args.points, 
+                start_in_store=args.upgrade_store, difficulty=difficulty)
     clock = pygame.time.Clock()
     running = True
     

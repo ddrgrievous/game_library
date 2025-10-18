@@ -25,6 +25,7 @@ python castle_defense/castle.py [options]
 | --level | int | 1 | Set the starting level |
 | --points | int | 0 | Set the starting points |
 | --upgrade-store | flag | false | Start the game in the upgrade store |
+| --difficulty | string | normal | Set game difficulty (easy/normal/hard) |
 
 ### Example Uses
 
@@ -47,7 +48,7 @@ python castle_defense/castle.py --level 5 --points 100 --upgrade-store
 
 ### Upgrades
 - Health Upgrade: Costs 10 points
-- Turret: Costs 10 points
+- Turret: Costs 30 points
   - Automatically targets nearest enemy
   - Bullets track enemies and deal 1 damage
   - Bullets can switch targets if original target dies
