@@ -40,7 +40,7 @@ def init_display():
         pygame.display.set_caption("Castle Defense")
 
 class Bullet:
-    def __init__(self, x, y, enemies):
+    def __init__(self, x, y, enemies, turret):
         self.x = x
         self.y = y
         self.speed = 7
@@ -50,6 +50,9 @@ class Bullet:
         self.target = None
         self.creation_time = pygame.time.get_ticks()
         self.max_lifetime = 5000  # Bullets despawn after 5 seconds
+        self.turret = turret  # Store reference to firing turret
+        self.color = turret.bullet_color
+        self.damage = turret.damage
         self.find_nearest_target()
 
     def find_nearest_target(self):
@@ -114,14 +117,47 @@ class Bullet:
         
         # Check for collision with target
         if math.hypot(self.x - self.target.x, self.y - self.target.y) < self.target.radius:
-            # Calculate damage considering armor
-            damage = 1
+            # Handle different turret effects
+            if self.turret.turret_type == "sniper":
+                damage = self.damage * 2.5  # Sniper does 2.5x damage
+            elif self.turret.turret_type == "splash":
+                # Create visual splash effect
+                splash_radius = 50
+                # Use a lighter version of the bullet color for the explosion
+                explosion_color = tuple(min(255, c + 50) for c in self.color)
+                splash_effect = SplashEffect(self.target.x, self.target.y, splash_radius, explosion_color)
+                self.turret.game.splash_effects.append(splash_effect)
+                
+                # Find enemies in splash radius
+                for nearby in self.enemies:
+                    if nearby.alive:
+                        dx = nearby.x - self.target.x
+                        dy = nearby.y - self.target.y
+                        dist = math.hypot(dx, dy)
+                        if dist <= splash_radius:
+                            # Damage falls off with distance
+                            damage_mult = 1 - (dist / splash_radius) * 0.5  # 50% damage at edge
+                            nearby.health -= self.damage * damage_mult
+                damage = self.damage  # Full damage to direct target
+            elif self.turret.turret_type == "frost":
+                # Apply slow effect
+                if not hasattr(self.target, 'slow_end_time'):
+                    self.target.original_speed = self.target.speed
+                    self.target.speed *= 0.5  # Slow to 50% speed
+                    self.target.slow_end_time = pygame.time.get_ticks() + 2000  # 2 second slow
+                damage = self.damage
+            else:
+                damage = self.damage  # Normal turret damage
+
+            # Apply armor reduction if target is a boss
             if self.target.enemy_type == "boss" and hasattr(self.target, "damage_reduction"):
                 damage *= (1 - self.target.damage_reduction)
             
+            # Apply damage and round appropriately
             self.target.health = round(self.target.health - damage, 1)  # Round to 1 decimal
             if self.target.enemy_type == "boss":
                 self.target.health = round(self.target.health)  # Round to whole number for bosses
+            
             # Always destroy bullet on hit
             self.alive = False
             
@@ -143,28 +179,60 @@ class Bullet:
                 return
 
     def draw(self):
-        pygame.draw.circle(screen, WHITE, (int(self.x), int(self.y)), self.radius)
+        pygame.draw.circle(screen, self.color, (int(self.x), int(self.y)), self.radius)
 
 class Turret:
-    def __init__(self, x, y, game=None):
+    def __init__(self, x, y, turret_type="standard", game=None):
         self.x = x
         self.y = y
         self.radius = 15
         self.level = 1
-        self.base_fire_rate = 2000  # Base milliseconds between shots
-        self.fire_rate = self.base_fire_rate  # Current fire rate
-        self.last_shot = 0
-        self.bullets = []
+        self.turret_type = turret_type
         self.game = game  # Store reference to game
+        self.bullets = []
+        self.last_shot = 0
+        
+        # Set base stats based on turret type
+        if turret_type == "splash":
+            self.base_fire_rate = 2500  # Slower fire rate
+            self.fire_rate = 2500  # Fixed fire rate (doesn't improve with upgrades)
+            self.damage = 1.5  # Slightly higher damage
+            self.base_splash_radius = 60  # Base splash radius
+            self.splash_radius = 60  # Current splash radius (increases with upgrades)
+            self.color = (150, 50, 50)  # Dark red
+            self.bullet_color = (255, 100, 100)  # Light red
+            self.upgrade_cost = 200  # Higher starting upgrade cost
+        elif turret_type == "frost":
+            self.base_fire_rate = 1600  # Faster fire rate
+            self.damage = 0.8  # Lower damage
+            self.slow_factor = 0.4  # Slow enemies to 40% speed
+            self.slow_duration = 2500  # How long the slow lasts (ms)
+            self.color = (50, 150, 150)  # Teal
+            self.bullet_color = (100, 255, 255)  # Light blue
+        else:  # standard
+            self.base_fire_rate = 2000
+            self.damage = 1
+            self.color = GRAY
+            self.bullet_color = WHITE
+            
+        self.fire_rate = self.base_fire_rate
         
     def get_upgrade_cost(self):
-        # Cost increases exponentially with level
-        return 15 * (self.level * 2)  # 15, 30, 60, 120, etc.
+        if hasattr(self, 'upgrade_cost'):
+            # For turrets with custom base upgrade costs (like splash)
+            return self.upgrade_cost * (self.level * 2)  # 200, 400, 800, etc. for splash
+        else:
+            # Standard turrets
+            return 15 * (self.level * 2)  # 15, 30, 60, 120, etc.
         
     def upgrade(self):
         self.level += 1
-        # Improve fire rate by 20% per level
-        self.fire_rate = int(self.base_fire_rate * (0.8 ** (self.level - 1)))
+        if self.turret_type == "splash":
+            # Increase splash radius by 20% per level
+            self.splash_radius = int(self.base_splash_radius * (1.2 ** (self.level - 1)))
+        else:
+            # Other turrets improve fire rate by 20% per level
+            self.fire_rate = int(self.base_fire_rate * (0.8 ** (self.level - 1)))
         
     def get_rect(self):
         # Return a rect for click detection
@@ -184,12 +252,12 @@ class Turret:
             # Check if there are any living enemies
             living_enemies = [e for e in enemies if e.alive]
             if living_enemies:
-                self.bullets.append(Bullet(self.x, self.y, enemies))
+                self.bullets.append(Bullet(self.x, self.y, enemies, self))
                 self.last_shot = current_time
 
     def draw(self, show_upgrade_info=False):
-        # Draw turret base
-        pygame.draw.circle(screen, GRAY, (int(self.x), int(self.y)), self.radius)
+        # Draw turret base with type-specific color
+        pygame.draw.circle(screen, self.color, (int(self.x), int(self.y)), self.radius)
         pygame.draw.circle(screen, BLACK, (int(self.x), int(self.y)), self.radius, 2)
         
         # Draw level number
@@ -219,16 +287,25 @@ class Turret:
         if show_upgrade_info:
             info_font = pygame.font.Font(None, 24)
             cost = self.get_upgrade_cost()
-            current_rate = self.fire_rate / 1000  # Convert to seconds
-            next_rate = self.base_fire_rate * (0.8 ** self.level) / 1000
+            # Create info box based on turret type
+            info_lines = [f"Level {self.level} Turret"]
             
-            # Create info box
-            info_lines = [
-                f"Level {self.level} Turret",
-                f"Current Rate: {current_rate:.1f}s",
-                f"Next Level: {next_rate:.1f}s",
-                f"Speed Boost: +20%"
-            ]
+            if self.turret_type == "splash":
+                current_radius = self.splash_radius
+                next_radius = int(self.base_splash_radius * (1.2 ** self.level))
+                info_lines.extend([
+                    f"Current Radius: {current_radius}px",
+                    f"Next Level: {next_radius}px",
+                    f"Area Boost: +20%"
+                ])
+            else:
+                current_rate = self.fire_rate / 1000  # Convert to seconds
+                next_rate = self.base_fire_rate * (0.8 ** self.level) / 1000
+                info_lines.extend([
+                    f"Current Rate: {current_rate:.1f}s",
+                    f"Next Level: {next_rate:.1f}s",
+                    f"Speed Boost: +20%"
+                ])
             
             # Calculate box size
             line_height = 25
@@ -297,7 +374,7 @@ class Castle:
         # Draw health
         font = pygame.font.Font(None, 48)
         color = RED if self.health < 10 else GREEN
-        health_text = font.render(f"Castle Health: {self.health:3d}", True, color)  # Width of 3 ensures 100 displays properly
+        health_text = font.render(f"Castle Health: {int(self.health):3d}", True, color)  # Width of 3 ensures 100 displays properly
         screen.blit(health_text, (WINDOW_WIDTH - 300, 20))
 
 class Enemy:
@@ -485,6 +562,12 @@ class Enemy:
         
         current_time = pygame.time.get_ticks()
         
+        # Handle frost slow wearing off
+        if hasattr(self, 'slow_end_time') and current_time >= self.slow_end_time:
+            self.speed = self.original_speed
+            del self.slow_end_time
+            del self.original_speed
+        
         if self.enemy_type == "boss":
             # Boss-specific trait updates
             if "regenerating" in self.traits:
@@ -519,6 +602,43 @@ class Enemy:
             return False
         distance = math.hypot(pos[0] - self.x, pos[1] - self.y)
         return distance <= self.radius
+
+class SplashEffect:
+    def __init__(self, x, y, radius, color):
+        self.x = x
+        self.y = y
+        self.max_radius = radius
+        self.current_radius = 1  # Start small and expand
+        self.creation_time = pygame.time.get_ticks()
+        self.duration = 200  # Effect lasts 200ms
+        self.color = color
+        self.alpha = 255
+        
+    def update(self, current_time):
+        time_alive = current_time - self.creation_time
+        if time_alive >= self.duration:
+            return False
+            
+        # Expand radius over time
+        progress = time_alive / self.duration
+        self.current_radius = self.max_radius * progress
+        # Fade out over time
+        self.alpha = int(255 * (1 - progress))
+        return True
+        
+    def draw(self):
+        # Create expanding circles with decreasing opacity
+        surface = pygame.Surface((self.max_radius * 2, self.max_radius * 2), pygame.SRCALPHA)
+        
+        # Draw multiple circles for a more dramatic effect
+        for r in range(int(self.current_radius), 0, -2):
+            alpha = int((r / self.current_radius) * self.alpha)
+            color_with_alpha = (*self.color, alpha)
+            pygame.draw.circle(surface, color_with_alpha, 
+                             (self.max_radius, self.max_radius), r)
+        
+        screen.blit(surface, 
+                   (self.x - self.max_radius, self.y - self.max_radius))
 
 class ClickEffect:
     def __init__(self, x, y, radius):
@@ -584,8 +704,9 @@ class Game:
         self.level_start_time = pygame.time.get_ticks()
         self.game_state = UPGRADING if start_in_store else PLAYING
         self.boss_spawned = False  # Initialize boss spawn flag
-        # Click effect system
+        # Effect systems
         self.click_effects = []  # List to store active click effects
+        self.splash_effects = []  # List to store splash damage effects
         self.CLICK_RADIUS = 20  # Size of the click effect circle
         self.CLICK_DURATION = 150  # How long the click effect lasts (milliseconds)
         
@@ -608,6 +729,7 @@ class Game:
         # Turret system
         self.placing_turret = False
         self.TURRET_COST = 30
+        self.selected_turret_type = "standard"  # Default turret type
         
         # Debug info for testing mode
         if start_level > 1 or start_points > 0 or start_in_store:
@@ -686,10 +808,12 @@ class Game:
         if self.game_state == GAME_OVER:
             return
         
-        # Update click effects and remove expired ones
+        # Update effects and remove expired ones
         current_time = pygame.time.get_ticks()
         self.click_effects = [effect for effect in self.click_effects 
                             if effect.update(current_time, self.CLICK_DURATION)]
+        self.splash_effects = [effect for effect in self.splash_effects
+                             if effect.update(current_time)]
             
         if self.game_state == PLAYING:
             # Check if level time is up
@@ -766,8 +890,10 @@ class Game:
         for enemy in self.enemies:
             enemy.draw()
         
-        # Draw click effects
+        # Draw effects
         for effect in self.click_effects:
+            effect.draw()
+        for effect in self.splash_effects:
             effect.draw()
         
         # Draw score and level
@@ -807,10 +933,30 @@ class Game:
             health_rect = health_text.get_rect(center=(WINDOW_WIDTH//2, WINDOW_HEIGHT//2))
             screen.blit(health_text, health_rect)
             
-            # Draw turret upgrade option
-            turret_text = font.render(f"Buy Turret ({self.TURRET_COST} points)", True, WHITE)
-            self.turret_rect = turret_text.get_rect(center=(WINDOW_WIDTH//2, WINDOW_HEIGHT//2 + 40))
-            screen.blit(turret_text, self.turret_rect)
+            # Draw turret upgrade options
+            turret_y = WINDOW_HEIGHT//2 + 40
+            turret_spacing = 40
+            turret_types = [
+                ("Standard Turret", "standard", GRAY, self.TURRET_COST),
+                ("Splash Turret", "splash", (150, 50, 50), 200),  # Dark red, 200 points
+                ("Frost Turret", "frost", (50, 150, 150), 45)   # Teal, 45 points
+            ]
+            
+            self.turret_costs = {type_id: cost for _, type_id, _, cost in turret_types}
+            self.turret_rects = {}  # Store rectangles for click detection
+            for i, (name, type_id, color, cost) in enumerate(turret_types):
+                turret_text = font.render(f"Buy {name} ({cost} points)", True, WHITE)
+                turret_rect = turret_text.get_rect(center=(WINDOW_WIDTH//2, turret_y + i * turret_spacing))
+                screen.blit(turret_text, turret_rect)
+                
+                # Draw turret preview circle
+                preview_x = turret_rect.right + 30
+                preview_y = turret_rect.centery
+                pygame.draw.circle(screen, color, (preview_x, preview_y), 10)
+                pygame.draw.circle(screen, BLACK, (preview_x, preview_y), 10, 2)
+                
+                # Store rectangle with turret type for click detection
+                self.turret_rects[type_id] = turret_rect
             
             # Draw continue button
             pygame.draw.rect(screen, GREEN, self.upgrade_button_rect)
@@ -881,9 +1027,8 @@ class Game:
                             break
                     
                     if not too_close:
-                        new_turret = Turret(pos[0], pos[1], self)
+                        new_turret = Turret(pos[0], pos[1], self.selected_turret_type, self)
                         self.castle.turrets.append(new_turret)
-                        self.score -= self.TURRET_COST
                         self.placing_turret = False
                 return
             
@@ -911,18 +1056,23 @@ class Game:
                     self.error_message = f"Not enough points! Need {HEALTH_UPGRADE_COST} points."
                     self.error_time = pygame.time.get_ticks()
             
-            # Check for turret purchase click
-            elif self.turret_rect.collidepoint(pos):
-                if self.score >= self.TURRET_COST:
-                    self.placing_turret = True
-                    self.error_message = "Click on the castle to place the turret"
-                    self.error_time = pygame.time.get_ticks()
-                else:
-                    self.error_message = f"Not enough points! Need {self.TURRET_COST} points."
-                    self.error_time = pygame.time.get_ticks()
-                
+            # Check for turret purchase clicks
+            for turret_type, rect in self.turret_rects.items():
+                if rect.collidepoint(pos):
+                    cost = self.turret_costs[turret_type]
+                    if self.score >= cost:
+                        self.placing_turret = True
+                        self.selected_turret_type = turret_type
+                        self.score -= cost
+                        self.error_message = f"Click on the castle to place the {turret_type} turret"
+                        self.error_time = pygame.time.get_ticks()
+                    else:
+                        self.error_message = f"Not enough points! Need {cost} points."
+                        self.error_time = pygame.time.get_ticks()
+                    break
+            
             # Check for continue button click
-            elif self.upgrade_button_rect.collidepoint(pos):
+            if self.upgrade_button_rect.collidepoint(pos):
                 if self.placing_turret:
                     self.placing_turret = False
                 else:
