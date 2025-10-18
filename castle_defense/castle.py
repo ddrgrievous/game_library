@@ -197,36 +197,60 @@ class Castle:
         screen.blit(health_text, (WINDOW_WIDTH - 300, 20))
 
 class Enemy:
-    def __init__(self, level):
+    def __init__(self, level, enemy_type="regular"):
         self.radius = ENEMY_SIZE // 2
         self.x = WINDOW_WIDTH + self.radius
         self.y = random.randint(self.radius, WINDOW_HEIGHT - self.radius)
-        self.speed = 2 + (level * 0.5)  # Enemies get faster with each level
+        self.enemy_type = enemy_type
         self.alive = True
-        # Health increases with level (min 1, max 5 health)
-        self.health = min(5, 1 + level // 3)  # Made health scaling more gradual
-        self.initial_health = self.health  # Store initial health for scoring
         self.points_awarded = False  # Track if points have been awarded for this enemy
+        
+        if enemy_type == "scout":
+            # Scouts are faster but weaker
+            self.speed = 3 + (level * 0.7)  # Higher base speed and scaling
+            self.health = 1  # Always 1 health
+            self.color = (0, 191, 255)  # Deep Sky Blue
+            self.radius = int(ENEMY_SIZE // 2.5)  # Smaller size
+        else:
+            # Regular enemies are slower but tougher
+            self.speed = 1.5 + (level * 0.3)  # Reduced base speed and scaling
+            self.health = min(5, 1 + level // 3)
+            self.color = RED
+            
+        self.initial_health = self.health  # Store initial health for scoring
         
     def draw(self):
         if not self.alive:
             return
             
         # Draw enemy body
-        pygame.draw.circle(screen, RED, (int(self.x), int(self.y)), self.radius)
+        pygame.draw.circle(screen, self.color, (int(self.x), int(self.y)), self.radius)
         
         # Draw enemy health number
-        font = pygame.font.Font(None, 24)
+        font_size = 20 if self.enemy_type == "scout" else 24
+        font = pygame.font.Font(None, font_size)
         health_text = font.render(str(self.health), True, WHITE)
         text_rect = health_text.get_rect(center=(int(self.x), int(self.y)))
         screen.blit(health_text, text_rect)
         
-        # Draw enemy details
-        pygame.draw.circle(screen, BLACK, (int(self.x - 5), int(self.y - 12)), 3)
-        pygame.draw.circle(screen, BLACK, (int(self.x + 5), int(self.y - 12)), 3)
-        pygame.draw.line(screen, BLACK, 
-                        (int(self.x - 8), int(self.y + 5)),
-                        (int(self.x + 8), int(self.y + 5)), 2)
+        if self.enemy_type == "scout":
+            # Scout details - sleeker look
+            eye_offset = 3
+            pygame.draw.circle(screen, BLACK, (int(self.x - 3), int(self.y - 8)), 2)
+            pygame.draw.circle(screen, BLACK, (int(self.x + 3), int(self.y - 8)), 2)
+            # Pointy mouth for scouts
+            pygame.draw.polygon(screen, BLACK, [
+                (int(self.x - 5), int(self.y + 3)),
+                (int(self.x + 5), int(self.y + 3)),
+                (int(self.x), int(self.y + 7))
+            ])
+        else:
+            # Regular enemy details
+            pygame.draw.circle(screen, BLACK, (int(self.x - 5), int(self.y - 12)), 3)
+            pygame.draw.circle(screen, BLACK, (int(self.x + 5), int(self.y - 12)), 3)
+            pygame.draw.line(screen, BLACK, 
+                           (int(self.x - 8), int(self.y + 5)),
+                           (int(self.x + 8), int(self.y + 5)), 2)
     
     def update(self):
         if not self.alive:
@@ -278,15 +302,39 @@ class Game:
             max_group_size = min(1 + self.level // 2, 5)  # Max 5 enemies at once
             num_enemies = random.randint(1, max_group_size)
             
+            # Scouts only appear from level 3 onwards
+            SCOUT_INTRO_LEVEL = 3
+            can_spawn_scouts = self.level >= SCOUT_INTRO_LEVEL
+            
+            if can_spawn_scouts:
+                # Scout chance increases with level, starting at 10% at level 3
+                # +5% per level after that, maxing at 40%
+                scout_chance = min(0.1 + ((self.level - SCOUT_INTRO_LEVEL) * 0.05), 0.4)
+                
+                # Show warning message on first scout encounter
+                if not hasattr(self, 'scouts_introduced') and self.game_state == PLAYING:
+                    self.error_message = "Warning: Fast scout enemies have appeared!"
+                    self.error_time = pygame.time.get_ticks()
+                    self.scouts_introduced = True
+            else:
+                scout_chance = 0
+            
             # Spawn group of enemies with slight position variations
             for _ in range(num_enemies):
-                enemy = Enemy(self.level)
+                # Decide if this enemy should be a scout
+                enemy_type = "scout" if random.random() < scout_chance else "regular"
+                enemy = Enemy(self.level, enemy_type)
+                
                 # Vary vertical position slightly within group
                 enemy.y += random.randint(-30, 30)
                 # Keep within screen bounds
                 enemy.y = max(enemy.radius, min(WINDOW_HEIGHT - enemy.radius, enemy.y))
                 # Vary horizontal position slightly for group
-                enemy.x += random.randint(0, 50)
+                # Scouts appear slightly further back
+                if enemy_type == "scout":
+                    enemy.x += random.randint(50, 100)
+                else:
+                    enemy.x += random.randint(0, 50)
                 self.enemies.append(enemy)
             
             # Vary next spawn delay

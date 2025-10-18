@@ -53,10 +53,20 @@ python castle_defense/castle.py --level 5 --points 100 --upgrade-store
   - Bullets can switch targets if original target dies
 
 ### Enemies
+
+Regular Enemies:
 - Health increases every 3 levels (max 5 health)
 - Speed increases with level
+- Red coloring, standard size
 - Points awarded based on initial health when killed
+
+Scout Enemies (Introduced at Level 3):
+- Always have 1 health
+- Move faster than regular enemies
+- Light blue coloring, smaller size
+- Appear more frequently at higher levels
 - Can be killed by clicks or turret shots
+- Spawn chance increases by 5% per level (max 40%)
 
 ### Testing Tips
 1. Use `--upgrade-store` to test turret placement and upgrades
