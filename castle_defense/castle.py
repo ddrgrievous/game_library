@@ -48,44 +48,50 @@ class Bullet:
         self.alive = True
         self.enemies = enemies  # Store reference to all enemies
         self.target = None
-        self.switch_time = 0  # Time when we can switch targets
-        self.switch_delay = 50  # Milliseconds to wait before switching targets
+        self.creation_time = pygame.time.get_ticks()
+        self.max_lifetime = 5000  # Bullets despawn after 5 seconds
         self.find_nearest_target()
 
     def find_nearest_target(self):
         # Find nearest living enemy that's on screen
         nearest_dist = float('inf')
         self.target = None
-        living_enemies = [e for e in self.enemies if e.alive and e.x > 0]
         
-        if not living_enemies:
+        # Quick check to avoid list comprehension if no valid targets exist
+        has_valid_target = False
+        for enemy in self.enemies:
+            if enemy.alive and enemy.x > 0:
+                has_valid_target = True
+                break
+                
+        if not has_valid_target:
             return False
             
-        for enemy in living_enemies:
-            dist = math.hypot(enemy.x - self.x, enemy.y - self.y)
-            if dist < nearest_dist:
-                nearest_dist = dist
-                self.target = enemy
+        # Find nearest target using squared distance (faster than hypot)
+        for enemy in self.enemies:
+            if enemy.alive and enemy.x > 0:
+                # Using squared distance to avoid square root calculation
+                dist_sq = (enemy.x - self.x)**2 + (enemy.y - self.y)**2
+                if dist_sq < nearest_dist:
+                    nearest_dist = dist_sq
+                    self.target = enemy
                 
-        return True  # We know we found a target because we checked living_enemies
+        return self.target is not None
 
     def update(self):
         current_time = pygame.time.get_ticks()
         
-        # Check if current target is invalid and enough time has passed to switch
-        if (self.target is None or not self.target.alive or self.target.x <= 0) and current_time >= self.switch_time:
+        # Check bullet lifetime
+        if current_time - self.creation_time > self.max_lifetime:
+            self.alive = False
+            return
+            
+        # Check if current target is invalid
+        if self.target is None or not self.target.alive or self.target.x <= 0:
             # Try to find a new target
             if not self.find_nearest_target():
                 self.alive = False
                 return
-        
-        # If we have an invalid target but haven't waited long enough, keep moving in the same direction
-        if self.target is None or not self.target.alive or self.target.x <= 0:
-            # Keep moving in current direction
-            if hasattr(self, 'last_dx') and hasattr(self, 'last_dy'):
-                self.x += self.last_dx
-                self.y += self.last_dy
-            return
             
         # Calculate direction to target
         dx = self.target.x - self.x
@@ -108,15 +114,33 @@ class Bullet:
         
         # Check for collision with target
         if math.hypot(self.x - self.target.x, self.y - self.target.y) < self.target.radius:
-            self.target.health -= 1
-            if self.target.health <= 0:
-                # Target died, set switch time before looking for new target
-                self.target.alive = False
-                self.switch_time = current_time + self.switch_delay
-                # Keep moving in current direction until switch_time
-                return
-            # If target survived, bullet disappears
+            # Calculate damage considering armor
+            damage = 1
+            if self.target.enemy_type == "boss" and hasattr(self.target, "damage_reduction"):
+                damage *= (1 - self.target.damage_reduction)
+            
+            self.target.health = round(self.target.health - damage, 1)  # Round to 1 decimal
+            if self.target.enemy_type == "boss":
+                self.target.health = round(self.target.health)  # Round to whole number for bosses
+            # Always destroy bullet on hit
             self.alive = False
+            
+            if self.target.health <= 0:
+                # Handle boss death effects
+                if self.target.enemy_type == "boss" and "splitting" in self.target.traits:
+                    # Spawn smaller enemies
+                    for _ in range(3):
+                        new_enemy = Enemy(
+                            self.target.level, 
+                            "scout",
+                            {'health': 0.5, 'speed': 1.2}  # Weaker but faster
+                        )
+                        new_enemy.x = self.target.x
+                        new_enemy.y = self.target.y + random.randint(-30, 30)
+                        self.enemies.append(new_enemy)
+                
+                self.target.alive = False
+                return
 
     def draw(self):
         pygame.draw.circle(screen, WHITE, (int(self.x), int(self.y)), self.radius)
@@ -298,11 +322,41 @@ class Enemy:
             self.color = (0, 191, 255)  # Deep Sky Blue
             self.radius = int(ENEMY_SIZE // 2.5)  # Smaller size
         elif enemy_type == "boss":
-            # Boss enemies are tough and moderately fast
-            self.speed = (1.0 + (level * 0.2)) * speed_mult
-            self.health = round((10 + (level // 5) * 5) * health_mult)
-            self.color = (148, 0, 211)  # Purple
+            # Boss enemies are extremely tough
+            self.speed = (0.8 + (level * 0.15)) * speed_mult  # Slightly slower but steady
+            # Exponential health scaling with level
+            base_health = 30  # Higher base health
+            level_scaling = level * 10  # Much more health per level
+            bonus_health = (level // 3) * 15  # Additional health every 3 levels
+            self.health = round((base_health + level_scaling + bonus_health) * health_mult)
+            
+            # Random color variations
+            base_colors = [
+                (148, 0, 211),  # Purple
+                (178, 34, 34),  # Firebrick Red
+                (0, 100, 0),    # Dark Green
+                (25, 25, 112),  # Midnight Blue
+                (139, 69, 19)   # Saddle Brown
+            ]
+            self.base_color = random.choice(base_colors)
+            self.color = self.base_color
             self.radius = int(ENEMY_SIZE * 1.5)  # Larger size
+            
+            # Random boss traits
+            self.traits = random.sample([
+                "armored",    # Takes less damage from bullets
+                "regenerating",  # Slowly heals
+                "rage",      # Gets faster at low health
+                "splitting", # Splits into smaller enemies on death
+                "aura"      # Glowing effect
+            ], k=2)  # Each boss gets 2 random traits
+            
+            # Initialize trait-specific properties
+            self.regen_rate = 0.05 if "regenerating" in self.traits else 0
+            self.damage_reduction = 0.5 if "armored" in self.traits else 0
+            self.base_speed = self.speed  # Store original speed for rage trait
+            self.rage_threshold = self.health * 0.3  # 30% health triggers rage
+            self.last_regen = pygame.time.get_ticks()
         elif enemy_type == "zigzagger":
             # Zigzagger enemies move in a pattern
             self.speed = (2 + (level * 0.4)) * speed_mult
@@ -332,13 +386,25 @@ class Enemy:
         # Draw enemy health number
         font_size = 20 if self.enemy_type == "scout" else 24
         font = pygame.font.Font(None, font_size)
-        health_text = font.render(str(self.health), True, WHITE)
+        # Display whole numbers for all enemies (especially bosses)
+        health_text = font.render(str(round(self.health)), True, WHITE)
         text_rect = health_text.get_rect(center=(int(self.x), int(self.y)))
         screen.blit(health_text, text_rect)
         
         if self.enemy_type == "boss":
-            # Boss details - crown and angry eyes
-            # Draw crown
+            # Draw special effects based on traits
+            if "aura" in self.traits:
+                # Draw glowing aura
+                for radius in range(int(self.radius * 1.5), int(self.radius), -2):
+                    alpha = int(128 * (radius - self.radius) / (self.radius * 0.5))
+                    aura_color = (*self.base_color, alpha)
+                    aura_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+                    pygame.draw.circle(aura_surface, aura_color, 
+                                    (radius, radius), radius)
+                    screen.blit(aura_surface, 
+                              (int(self.x - radius), int(self.y - radius)))
+            
+            # Draw boss crown with color matching base
             crown_points = [
                 (int(self.x - self.radius * 0.8), int(self.y - self.radius * 0.8)),
                 (int(self.x - self.radius * 0.4), int(self.y - self.radius * 1.2)),
@@ -346,9 +412,42 @@ class Enemy:
                 (int(self.x + self.radius * 0.4), int(self.y - self.radius * 1.2)),
                 (int(self.x + self.radius * 0.8), int(self.y - self.radius * 0.8))
             ]
-            pygame.draw.polygon(screen, (255, 215, 0), crown_points)  # Gold crown
+            # Draw crown outline
+            pygame.draw.polygon(screen, BLACK, crown_points, 3)
+            # Fill crown with slightly lighter version of base color
+            crown_color = tuple(min(255, c + 50) for c in self.base_color)
+            pygame.draw.polygon(screen, crown_color, crown_points)
             
-            # Angry eyes
+            # Draw trait indicators
+            if "armored" in self.traits:
+                # Draw armor plates
+                for angle in range(0, 360, 45):
+                    rad = math.radians(angle)
+                    x1 = self.x + math.cos(rad) * (self.radius * 0.7)
+                    y1 = self.y + math.sin(rad) * (self.radius * 0.7)
+                    x2 = self.x + math.cos(rad) * self.radius
+                    y2 = self.y + math.sin(rad) * self.radius
+                    pygame.draw.line(screen, WHITE, (int(x1), int(y1)), 
+                                   (int(x2), int(y2)), 3)
+            
+            if "regenerating" in self.traits:
+                # Draw healing symbols
+                green_glow = (0, 255, 0, 128)
+                glow_surface = pygame.Surface((20, 20), pygame.SRCALPHA)
+                pygame.draw.circle(glow_surface, green_glow, (10, 10), 5)
+                screen.blit(glow_surface, (int(self.x - 10), int(self.y - self.radius - 15)))
+            
+            if "rage" in self.traits:
+                # Draw rage indicators (red when active)
+                rage_color = RED if self.health <= self.rage_threshold else DARKGRAY
+                pygame.draw.line(screen, rage_color, 
+                               (int(self.x - 15), int(self.y - 5)),
+                               (int(self.x - 5), int(self.y + 5)), 3)
+                pygame.draw.line(screen, rage_color,
+                               (int(self.x + 15), int(self.y - 5)),
+                               (int(self.x + 5), int(self.y + 5)), 3)
+            
+            # Angry eyes (always present)
             pygame.draw.line(screen, BLACK, 
                            (int(self.x - 10), int(self.y - 5)),
                            (int(self.x - 5), int(self.y)), 3)
@@ -384,7 +483,23 @@ class Enemy:
         if not self.alive:
             return
         
-        if self.enemy_type == "zigzagger":
+        current_time = pygame.time.get_ticks()
+        
+        if self.enemy_type == "boss":
+            # Boss-specific trait updates
+            if "regenerating" in self.traits:
+                # Regenerate health every second
+                if current_time - self.last_regen >= 1000:  # 1000ms = 1 second
+                    self.health = round(min(self.initial_health, self.health + self.regen_rate * self.initial_health))
+                    self.last_regen = current_time
+                    
+            if "rage" in self.traits and self.health <= self.rage_threshold:
+                # Speed up when health is low
+                self.speed = self.base_speed * 1.5
+            
+            self.x -= self.speed
+            
+        elif self.enemy_type == "zigzagger":
             # Update horizontal position
             self.x -= self.speed
             # Update distance traveled for zigzag calculation
@@ -626,14 +741,17 @@ class Game:
                 turret.update(self.enemies)
         
         # Handle dead enemies and update score
-        current_enemies = []
+        # Remove enemies that are off-screen to the left
+        self.enemies = [enemy for enemy in self.enemies if enemy.x + enemy.radius > 0]
+        
+        # Handle dead enemies and award points
         for enemy in self.enemies:
-            if not enemy.alive and not enemy.points_awarded:  # Award points for turret kills
+            if not enemy.alive and not enemy.points_awarded:
                 self.score += enemy.initial_health
                 enemy.points_awarded = True
-            if enemy.alive or enemy.x > 0:
-                current_enemies.append(enemy)
-        self.enemies = current_enemies
+                
+        # Keep only relevant enemies
+        self.enemies = [enemy for enemy in self.enemies if enemy.alive or not enemy.points_awarded]
         
         # Remove this auto-level up based on score as levels now progress through the upgrade screen
     
