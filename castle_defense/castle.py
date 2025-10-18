@@ -11,8 +11,8 @@ WINDOW_WIDTH = 1600  # Made screen wider
 WINDOW_HEIGHT = 600
 CASTLE_WIDTH = 200
 ENEMY_SIZE = 30
-SPAWN_RATE = 3000  # milliseconds between spawns at start
-MIN_SPAWN_RATE = 500  # fastest possible spawn rate
+SPAWN_RATE = 2500  # milliseconds between spawns at start (reduced from 3000)
+MIN_SPAWN_RATE = 400  # fastest possible spawn rate (reduced from 500)
 LEVEL_DURATION = 30  # seconds
 HEALTH_UPGRADE_COST = 10  # points per health point
 
@@ -46,29 +46,46 @@ class Bullet:
         self.radius = 5
         self.alive = True
         self.enemies = enemies  # Store reference to all enemies
+        self.target = None
+        self.switch_time = 0  # Time when we can switch targets
+        self.switch_delay = 50  # Milliseconds to wait before switching targets
         self.find_nearest_target()
 
     def find_nearest_target(self):
-        # Find nearest living enemy
+        # Find nearest living enemy that's on screen
         nearest_dist = float('inf')
         self.target = None
-        for enemy in self.enemies:
-            if enemy.alive:
-                dist = math.hypot(enemy.x - self.x, enemy.y - self.y)
-                if dist < nearest_dist:
-                    nearest_dist = dist
-                    self.target = enemy
-        # If no living enemies found, bullet disappears
-        if self.target is None:
-            self.alive = False
+        living_enemies = [e for e in self.enemies if e.alive and e.x > 0]
+        
+        if not living_enemies:
+            return False
+            
+        for enemy in living_enemies:
+            dist = math.hypot(enemy.x - self.x, enemy.y - self.y)
+            if dist < nearest_dist:
+                nearest_dist = dist
+                self.target = enemy
+                
+        return True  # We know we found a target because we checked living_enemies
 
     def update(self):
-        # If current target is dead, find a new one
-        if not self.target or not self.target.alive:
-            self.find_nearest_target()
-            if not self.alive:  # No targets found
+        current_time = pygame.time.get_ticks()
+        
+        # Check if current target is invalid and enough time has passed to switch
+        if (self.target is None or not self.target.alive or self.target.x <= 0) and current_time >= self.switch_time:
+            # Try to find a new target
+            if not self.find_nearest_target():
+                self.alive = False
                 return
         
+        # If we have an invalid target but haven't waited long enough, keep moving in the same direction
+        if self.target is None or not self.target.alive or self.target.x <= 0:
+            # Keep moving in current direction
+            if hasattr(self, 'last_dx') and hasattr(self, 'last_dy'):
+                self.x += self.last_dx
+                self.y += self.last_dy
+            return
+            
         # Calculate direction to target
         dx = self.target.x - self.x
         dy = self.target.y - self.y
@@ -80,6 +97,10 @@ class Bullet:
         dx = dx / dist * self.speed
         dy = dy / dist * self.speed
         
+        # Store last direction for continuing momentum
+        self.last_dx = dx
+        self.last_dy = dy
+        
         # Update position
         self.x += dx
         self.y += dy
@@ -88,7 +109,12 @@ class Bullet:
         if math.hypot(self.x - self.target.x, self.y - self.target.y) < self.target.radius:
             self.target.health -= 1
             if self.target.health <= 0:
+                # Target died, set switch time before looking for new target
                 self.target.alive = False
+                self.switch_time = current_time + self.switch_delay
+                # Keep moving in current direction until switch_time
+                return
+            # If target survived, bullet disappears
             self.alive = False
 
     def draw(self):
@@ -217,15 +243,17 @@ class Enemy:
         return distance <= self.radius
 
 class Game:
-    def __init__(self, start_level=1, start_points=0):
+    def __init__(self, start_level=1, start_points=0, start_in_store=False):
         self.castle = Castle()
         self.enemies = []
         self.level = start_level
         self.score = start_points
         self.last_spawn = pygame.time.get_ticks()
         self.level_start_time = pygame.time.get_ticks()
-        self.game_state = PLAYING
-        self.spawn_delay = max(MIN_SPAWN_RATE, SPAWN_RATE - (self.level * 200))  # Adjust spawn rate for starting level
+        self.game_state = UPGRADING if start_in_store else PLAYING
+        # More aggressive spawn delay reduction at higher levels
+        base_reduction = 300 + (self.level * 100)  # Increases reduction with level
+        self.spawn_delay = max(MIN_SPAWN_RATE, SPAWN_RATE - base_reduction)
         self.upgrade_button_rect = pygame.Rect(WINDOW_WIDTH//2 - 100, WINDOW_HEIGHT - 80, 200, 50)
         # Error message system
         self.error_message = None
@@ -236,15 +264,37 @@ class Game:
         self.TURRET_COST = 10
         
         # Debug info for testing mode
-        if start_level > 1 or start_points > 0:
+        if start_level > 1 or start_points > 0 or start_in_store:
             print(f"Testing Mode Active:")
             print(f"Starting Level: {start_level}")
             print(f"Starting Points: {start_points}")
+            if start_in_store:
+                print("Starting in Upgrade Store")
     
     def spawn_enemy(self):
         current_time = pygame.time.get_ticks()
         if current_time - self.last_spawn > self.spawn_delay:
-            self.enemies.append(Enemy(self.level))
+            # Calculate number of enemies to spawn based on level
+            max_group_size = min(1 + self.level // 2, 5)  # Max 5 enemies at once
+            num_enemies = random.randint(1, max_group_size)
+            
+            # Spawn group of enemies with slight position variations
+            for _ in range(num_enemies):
+                enemy = Enemy(self.level)
+                # Vary vertical position slightly within group
+                enemy.y += random.randint(-30, 30)
+                # Keep within screen bounds
+                enemy.y = max(enemy.radius, min(WINDOW_HEIGHT - enemy.radius, enemy.y))
+                # Vary horizontal position slightly for group
+                enemy.x += random.randint(0, 50)
+                self.enemies.append(enemy)
+            
+            # Vary next spawn delay
+            base_delay = self.spawn_delay
+            self.spawn_delay = random.randint(
+                int(base_delay * 0.7),  # 30% faster than base delay
+                int(base_delay * 1.3)   # 30% slower than base delay
+            )
             self.last_spawn = current_time
     
     def update(self):
@@ -433,13 +483,14 @@ def main():
     parser = argparse.ArgumentParser(description='Castle Defense Game')
     parser.add_argument('--level', type=int, default=1, help='Starting level (default: 1)')
     parser.add_argument('--points', type=int, default=0, help='Starting points (default: 0)')
+    parser.add_argument('--upgrade-store', action='store_true', help='Start in upgrade store')
     args = parser.parse_args()
     
     # Initialize display
     init_display()
     
     # Create game with custom starting values
-    game = Game(start_level=args.level, start_points=args.points)
+    game = Game(start_level=args.level, start_points=args.points, start_in_store=args.upgrade_store)
     clock = pygame.time.Clock()
     running = True
     
